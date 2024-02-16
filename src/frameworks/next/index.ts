@@ -30,7 +30,13 @@ import {
   validateLocales,
   getNodeModuleBin,
 } from "../utils";
-import { BuildResult, FrameworkType, SupportLevel } from "../interfaces";
+import {
+  BuildResult,
+  Framework,
+  FrameworkContext,
+  FrameworkType,
+  SupportLevel,
+} from "../interfaces";
 
 import {
   cleanEscapedChars,
@@ -47,6 +53,7 @@ import {
   getHeadersFromMetaFiles,
   cleanI18n,
   getNextVersion,
+  hasStaticAppNotFoundComponent,
 } from "./utils";
 import { NODE_VERSION, NPM_COMMAND_TIMEOUT_MILLIES, SHARP_VERSION, I18N_ROOT } from "../constants";
 import type {
@@ -66,11 +73,13 @@ import {
   APP_PATHS_MANIFEST,
   ESBUILD_VERSION,
 } from "./constants";
-import { getAllSiteDomains } from "../../hosting/api";
+import { getAllSiteDomains, getDeploymentDomain } from "../../hosting/api";
 import { logger } from "../../logger";
 
 const DEFAULT_BUILD_SCRIPT = ["next build"];
 const PUBLIC_DIR = "public";
+
+export const supportedRange = "12 - 14.0";
 
 export const name = "Next.js";
 export const support = SupportLevel.Preview;
@@ -89,15 +98,20 @@ function getReactVersion(cwd: string): string | undefined {
  */
 export async function discover(dir: string) {
   if (!(await pathExists(join(dir, "package.json")))) return;
-  if (!(await pathExists("next.config.js")) && !getNextVersion(dir)) return;
+  const version = getNextVersion(dir);
+  if (!(await pathExists("next.config.js")) && !version) return;
 
-  return { mayWantBackend: true, publicDirectory: join(dir, PUBLIC_DIR) };
+  return { mayWantBackend: true, publicDirectory: join(dir, PUBLIC_DIR), version };
 }
 
 /**
  * Build a next.js application.
  */
-export async function build(dir: string): Promise<BuildResult> {
+export async function build(
+  dir: string,
+  target: string,
+  context?: FrameworkContext,
+): Promise<BuildResult> {
   await warnIfCustomBuildScript(dir, name, DEFAULT_BUILD_SCRIPT);
 
   const reactVersion = getReactVersion(dir);
@@ -106,10 +120,27 @@ export async function build(dir: string): Promise<BuildResult> {
     process.env.__NEXT_REACT_ROOT = "true";
   }
 
+  const env = { ...process.env };
+
+  if (context?.projectId && context?.site) {
+    const deploymentDomain = await getDeploymentDomain(
+      context.projectId,
+      context.site,
+      context.hostingChannel,
+    );
+
+    if (deploymentDomain) {
+      // Add the deployment domain to VERCEL_URL env variable, which is
+      // required for dynamic OG images to work without manual configuration.
+      // See: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#default-value
+      env["VERCEL_URL"] = deploymentDomain;
+    }
+  }
+
   const cli = getNodeModuleBin("next", dir);
 
   const nextBuild = new Promise((resolve, reject) => {
-    const buildProcess = spawn(cli, ["build"], { cwd: dir });
+    const buildProcess = spawn(cli, ["build"], { cwd: dir, env });
     buildProcess.stdout?.on("data", (data) => logger.info(data.toString()));
     buildProcess.stderr?.on("data", (data) => logger.info(data.toString()));
     buildProcess.on("error", (err) => {
@@ -133,11 +164,11 @@ export async function build(dir: string): Promise<BuildResult> {
   }
 
   const prerenderManifest = await readJSON<PrerenderManifest>(
-    join(dir, distDir, PRERENDER_MANIFEST)
+    join(dir, distDir, PRERENDER_MANIFEST),
   );
 
   const dynamicRoutesWithFallback = Object.entries(prerenderManifest.dynamicRoutes || {}).filter(
-    ([, it]) => it.fallback !== false
+    ([, it]) => it.fallback !== false,
   );
   if (dynamicRoutesWithFallback.length > 0) {
     for (const [key] of dynamicRoutesWithFallback) {
@@ -146,7 +177,7 @@ export async function build(dir: string): Promise<BuildResult> {
   }
 
   const routesWithRevalidate = Object.entries(prerenderManifest.routes).filter(
-    ([, it]) => it.initialRevalidateSeconds
+    ([, it]) => it.initialRevalidateSeconds,
   );
   if (routesWithRevalidate.length > 0) {
     for (const [, { srcRoute }] of routesWithRevalidate) {
@@ -155,7 +186,7 @@ export async function build(dir: string): Promise<BuildResult> {
   }
 
   const pagesManifestJSON = await readJSON<PagesManifest>(
-    join(dir, distDir, "server", PAGES_MANIFEST)
+    join(dir, distDir, "server", PAGES_MANIFEST),
   );
   const prerenderedRoutes = Object.keys(prerenderManifest.routes);
   const dynamicRoutes = Object.keys(prerenderManifest.dynamicRoutes);
@@ -191,10 +222,10 @@ export async function build(dir: string): Promise<BuildResult> {
 
   const [appPathsManifest, appPathRoutesManifest] = await Promise.all([
     readJSON<AppPathsManifest>(join(dir, distDir, "server", APP_PATHS_MANIFEST)).catch(
-      () => undefined
+      () => undefined,
     ),
     readJSON<AppPathRoutesManifest>(join(dir, distDir, APP_PATH_ROUTES_MANIFEST)).catch(
-      () => undefined
+      () => undefined,
     ),
   ]);
 
@@ -203,7 +234,7 @@ export async function build(dir: string): Promise<BuildResult> {
       dir,
       distDir,
       baseUrl,
-      appPathRoutesManifest
+      appPathRoutesManifest,
     );
     headers.push(...headersFromMetaFiles);
 
@@ -212,8 +243,15 @@ export async function build(dir: string): Promise<BuildResult> {
         appPathsManifest,
         appPathRoutesManifest,
         prerenderedRoutes,
-        dynamicRoutes
+        dynamicRoutes,
       );
+
+      if (
+        unrenderedServerComponents.has("/_not-found") &&
+        (await hasStaticAppNotFoundComponent(dir, distDir))
+      ) {
+        unrenderedServerComponents.delete("/_not-found");
+      }
 
       for (const key of unrenderedServerComponents) {
         reasonsForBackend.add(`non-static component ${key}`);
@@ -268,7 +306,7 @@ export async function build(dir: string): Promise<BuildResult> {
     logger.info("Building a Cloud Function to run this application. This is needed due to:");
     for (const reason of Array.from(reasonsForBackend).slice(
       0,
-      DEFAULT_NUMBER_OF_REASONS_TO_LIST
+      DEFAULT_NUMBER_OF_REASONS_TO_LIST,
     )) {
       logger.info(` • ${reason}`);
     }
@@ -279,7 +317,7 @@ export async function build(dir: string): Promise<BuildResult> {
       logger.info(
         ` • and ${
           reasonsForBackend.size - DEFAULT_NUMBER_OF_REASONS_TO_LIST
-        } other reasons, use --debug to see more`
+        } other reasons, use --debug to see more`,
       );
     }
     logger.info("");
@@ -309,10 +347,10 @@ export async function init(setup: any, config: any) {
     choices: ["JavaScript", "TypeScript"],
   });
   execSync(
-    `npx --yes create-next-app@latest -e hello-world ${setup.hosting.source} --use-npm ${
-      language === "TypeScript" ? "--ts" : "--js"
-    }`,
-    { stdio: "inherit", cwd: config.projectDir }
+    `npx --yes create-next-app@"${supportedRange}" -e hello-world ${
+      setup.hosting.source
+    } --use-npm ${language === "TypeScript" ? "--ts" : "--js"}`,
+    { stdio: "inherit", cwd: config.projectDir },
   );
 }
 
@@ -323,7 +361,7 @@ export async function ɵcodegenPublicDirectory(
   sourceDir: string,
   destDir: string,
   _: string,
-  context: { site: string; project: string }
+  context: { site: string; project: string },
 ) {
   const { distDir, i18n, basePath } = await getConfig(sourceDir);
 
@@ -353,7 +391,7 @@ export async function ɵcodegenPublicDirectory(
     readJSON<RoutesManifest>(join(sourceDir, distDir, ROUTES_MANIFEST)),
     readJSON<PagesManifest>(join(sourceDir, distDir, "server", PAGES_MANIFEST)),
     readJSON<AppPathRoutesManifest>(join(sourceDir, distDir, APP_PATH_ROUTES_MANIFEST)).catch(
-      () => ({})
+      () => ({}),
     ),
   ]);
 
@@ -390,7 +428,7 @@ export async function ɵcodegenPublicDirectory(
       .filter(([, srcRoute]) => srcRoute.endsWith(".html"))
       .map(([path]) => {
         return [path, { srcRoute: null, initialRevalidateSeconds: false, dataRoute: "" }];
-      })
+      }),
   );
 
   const routesToCopy: PrerenderManifest["routes"] = {
@@ -406,7 +444,7 @@ export async function ɵcodegenPublicDirectory(
       }
       if (pathsUsingsFeaturesNotSupportedByHosting.some((it) => path.match(it))) {
         logger.debug(
-          `skipping ${path} due to it matching an unsupported rewrite/redirect/header or middlware`
+          `skipping ${path} due to it matching an unsupported rewrite/redirect/header or middlware`,
         );
         return;
       }
@@ -470,14 +508,19 @@ export async function ɵcodegenPublicDirectory(
         await mkdir(dirname(dataDestPath), { recursive: true });
         await copyFile(join(contentDist, dataSourcePath), dataDestPath);
       }
-    })
+    }),
   );
 }
 
 /**
  * Create a directory for SSR content.
  */
-export async function ɵcodegenFunctionsDirectory(sourceDir: string, destDir: string) {
+export async function ɵcodegenFunctionsDirectory(
+  sourceDir: string,
+  destDir: string,
+  target: string,
+  context?: FrameworkContext,
+): ReturnType<NonNullable<Framework["ɵcodegenFunctionsDirectory"]>> {
   const { distDir } = await getConfig(sourceDir);
   const packageJson = await readJSON(join(sourceDir, "package.json"));
   // Bundle their next.config.js with esbuild via NPX, pinned version was having troubles on m1
@@ -516,7 +559,7 @@ export async function ɵcodegenFunctionsDirectory(sourceDir: string, destDir: st
           "--platform=node",
           `--target=node${NODE_VERSION}`,
           `--outdir=${destDir}`,
-          "--log-level=error"
+          "--log-level=error",
         );
       const bundle = spawnSync(
         "npx",
@@ -524,14 +567,14 @@ export async function ɵcodegenFunctionsDirectory(sourceDir: string, destDir: st
         {
           cwd: sourceDir,
           timeout: BUNDLE_NEXT_CONFIG_TIMEOUT,
-        }
+        },
       );
       if (bundle.status !== 0) {
         throw new FirebaseError(bundle.stderr.toString());
       }
     } catch (e: any) {
       console.warn(
-        "Unable to bundle next.config.js for use in Cloud Functions, proceeding with deploy but problems may be enountered."
+        "Unable to bundle next.config.js for use in Cloud Functions, proceeding with deploy but problems may be enountered.",
       );
       console.error(e.message || e);
       copy(join(sourceDir, "next.config.js"), join(destDir, "next.config.js"));
@@ -547,9 +590,25 @@ export async function ɵcodegenFunctionsDirectory(sourceDir: string, destDir: st
     packageJson.dependencies["sharp"] = SHARP_VERSION;
   }
 
+  const dotEnv: Record<string, string> = {};
+  if (context?.projectId && context?.site) {
+    const deploymentDomain = await getDeploymentDomain(
+      context.projectId,
+      context.site,
+      context.hostingChannel,
+    );
+
+    if (deploymentDomain) {
+      // Add the deployment domain to VERCEL_URL env variable, which is
+      // required for dynamic OG images to work without manual configuration.
+      // See: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#default-value
+      dotEnv["VERCEL_URL"] = deploymentDomain;
+    }
+  }
+
   await mkdirp(join(destDir, distDir));
   await copy(join(sourceDir, distDir), join(destDir, distDir));
-  return { packageJson, frameworksEntry: "next.js" };
+  return { packageJson, frameworksEntry: "next.js", dotEnv };
 }
 
 /**
@@ -561,13 +620,13 @@ export async function getDevModeHandle(dir: string, _: string, hostingEmulatorIn
     if (await isUsingMiddleware(dir, true)) {
       throw new FirebaseError(
         `${clc.bold("firebase serve")} does not support Next.js Middleware. Please use ${clc.bold(
-          "firebase emulators:start"
-        )} instead.`
+          "firebase emulators:start",
+        )} instead.`,
       );
     }
   }
 
-  let next = relativeRequire(dir, "next");
+  let next = await relativeRequire(dir, "next");
   if ("default" in next) next = next.default;
   const nextApp = next({
     dev: true,
@@ -585,15 +644,17 @@ export async function getDevModeHandle(dir: string, _: string, hostingEmulatorIn
 }
 
 async function getConfig(
-  dir: string
+  dir: string,
 ): Promise<Partial<NextConfig> & { distDir: string; trailingSlash: boolean; basePath: string }> {
   let config: NextConfig = {};
   if (existsSync(join(dir, "next.config.js"))) {
     const version = getNextVersion(dir);
     if (!version) throw new Error("Unable to find the next dep, try NPM installing?");
     if (gte(version, "12.0.0")) {
-      const { default: loadConfig } = relativeRequire(dir, "next/dist/server/config");
-      const { PHASE_PRODUCTION_BUILD } = relativeRequire(dir, "next/constants");
+      const [{ default: loadConfig }, { PHASE_PRODUCTION_BUILD }] = await Promise.all([
+        relativeRequire(dir, "next/dist/server/config"),
+        relativeRequire(dir, "next/constants"),
+      ]);
       config = await loadConfig(PHASE_PRODUCTION_BUILD, dir);
     } else {
       try {

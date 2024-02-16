@@ -20,7 +20,7 @@ const CLI_VERSION: string = pkg.version;
 
 const GOOG_QUOTA_USER = "x-goog-quota-user";
 
-export type HttpMethod = "GET" | "PUT" | "POST" | "DELETE" | "PATCH";
+export type HttpMethod = "GET" | "PUT" | "POST" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD";
 
 interface BaseRequestOptions<T> extends VerbOptions {
   method: HttpMethod;
@@ -140,7 +140,7 @@ export class Client {
   post<ReqT, ResT>(
     path: string,
     json?: ReqT,
-    options: ClientVerbOptions = {}
+    options: ClientVerbOptions = {},
   ): Promise<ClientResponse<ResT>> {
     const reqOptions: ClientRequestOptions<ReqT> = Object.assign(options, {
       method: "POST",
@@ -153,7 +153,7 @@ export class Client {
   patch<ReqT, ResT>(
     path: string,
     json?: ReqT,
-    options: ClientVerbOptions = {}
+    options: ClientVerbOptions = {},
   ): Promise<ClientResponse<ResT>> {
     const reqOptions: ClientRequestOptions<ReqT> = Object.assign(options, {
       method: "PATCH",
@@ -166,7 +166,7 @@ export class Client {
   put<ReqT, ResT>(
     path: string,
     json?: ReqT,
-    options: ClientVerbOptions = {}
+    options: ClientVerbOptions = {},
   ): Promise<ClientResponse<ResT>> {
     const reqOptions: ClientRequestOptions<ReqT> = Object.assign(options, {
       method: "PUT",
@@ -184,6 +184,13 @@ export class Client {
     return this.request<unknown, ResT>(reqOptions);
   }
 
+  options<ResT>(path: string, options: ClientVerbOptions = {}): Promise<ClientResponse<ResT>> {
+    const reqOptions: ClientRequestOptions<unknown> = Object.assign(options, {
+      method: "OPTIONS",
+      path,
+    });
+    return this.request<unknown, ResT>(reqOptions);
+  }
   /**
    * Makes a request as specified by the options.
    * By default, this will:
@@ -212,7 +219,7 @@ export class Client {
     if (reqOptions.responseType === "stream" && !reqOptions.resolveOnHTTPError) {
       throw new FirebaseError(
         "apiv2 will not handle HTTP errors while streaming and you must set `resolveOnHTTPError` and check for res.status >= 400 on your own",
-        { exit: 2 }
+        { exit: 2 },
       );
     }
 
@@ -243,7 +250,7 @@ export class Client {
   }
 
   private addRequestHeaders<T>(
-    reqOptions: InternalClientRequestOptions<T>
+    reqOptions: InternalClientRequestOptions<T>,
   ): InternalClientRequestOptions<T> {
     if (!reqOptions.headers) {
       reqOptions.headers = new Headers();
@@ -262,7 +269,7 @@ export class Client {
   }
 
   private async addAuthHeader<T>(
-    reqOptions: InternalClientRequestOptions<T>
+    reqOptions: InternalClientRequestOptions<T>,
   ): Promise<InternalClientRequestOptions<T>> {
     if (!reqOptions.headers) {
       reqOptions.headers = new Headers();
@@ -292,7 +299,7 @@ export class Client {
   }
 
   private async doRequest<ReqT, ResT>(
-    options: InternalClientRequestOptions<ReqT>
+    options: InternalClientRequestOptions<ReqT>,
   ): Promise<ClientResponse<ResT>> {
     if (!options.path.startsWith("/")) {
       options.path = "/" + options.path;
@@ -369,7 +376,7 @@ export class Client {
         try {
           if (currentAttempt > 1) {
             logger.debug(
-              `*** [apiv2] Attempting the request again. Attempt number ${currentAttempt}`
+              `*** [apiv2] Attempting the request again. Attempt number ${currentAttempt}`,
             );
           }
           this.logRequest(options);
@@ -378,7 +385,7 @@ export class Client {
           } catch (thrown: any) {
             const err = thrown instanceof Error ? thrown : new Error(thrown);
             logger.debug(
-              `*** [apiv2] error from fetch(${fetchURL}, ${JSON.stringify(fetchOptions)}): ${err}`
+              `*** [apiv2] error from fetch(${fetchURL}, ${JSON.stringify(fetchOptions)}): ${err}`,
             );
             const isAbortError = err.name.includes("AbortError");
             if (isAbortError) {
@@ -464,7 +471,7 @@ export class Client {
       logger.debug(
         `>>> [apiv2][(partial)header] ${options.method} ${logURL} x-goog-quota-user=${
           headers.get(GOOG_QUOTA_USER) || ""
-        }`
+        }`,
       );
     }
     if (options.body !== undefined) {
@@ -479,7 +486,7 @@ export class Client {
   private logResponse(
     res: Response,
     body: unknown,
-    options: InternalClientRequestOptions<unknown>
+    options: InternalClientRequestOptions<unknown>,
   ): void {
     const logURL = this.requestURL(options);
     logger.debug(`<<< [apiv2][status] ${options.method} ${logURL} ${res.status}`);

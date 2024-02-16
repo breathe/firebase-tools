@@ -5,6 +5,7 @@ import * as operationPoller from "../operation-poller";
 import { DEFAULT_DURATION } from "../hosting/expireUtils";
 import { getAuthDomains, updateAuthDomains } from "../gcp/auth";
 import * as proto from "../gcp/proto";
+import { getHostnameFromUrl } from "../utils";
 
 const ONE_WEEK_MS = 604800000; // 7 * 24 * 60 * 60 * 1000
 
@@ -229,6 +230,19 @@ interface LongRunningOperation<T> {
   readonly metadata: T | undefined;
 }
 
+// The possible types of a site.
+export enum SiteType {
+  // Unknown state, likely the result of an error on the backend.
+  TYPE_UNSPECIFIED = "TYPE_UNSPECIFIED",
+
+  // The default Hosting site that is provisioned when a Firebase project is
+  // created.
+  DEFAULT_SITE = "DEFAULT_SITE",
+
+  // A Hosting site that the user created.
+  USER_SITE = "USER_SITE",
+}
+
 export type Site = {
   // Fully qualified name of the site.
   name: string;
@@ -236,6 +250,8 @@ export type Site = {
   readonly defaultUrl: string;
 
   readonly appId: string;
+
+  readonly type?: SiteType;
 
   labels: { [key: string]: string };
 };
@@ -268,11 +284,11 @@ const apiClient = new Client({
 export async function getChannel(
   project: string | number = "-",
   site: string,
-  channelId: string
+  channelId: string,
 ): Promise<Channel | null> {
   try {
     const res = await apiClient.get<Channel>(
-      `/projects/${project}/sites/${site}/channels/${channelId}`
+      `/projects/${project}/sites/${site}/channels/${channelId}`,
     );
     return res.body;
   } catch (e: unknown) {
@@ -290,20 +306,17 @@ export async function getChannel(
  */
 export async function listChannels(
   project: string | number = "-",
-  site: string
+  site: string,
 ): Promise<Channel[]> {
   const channels: Channel[] = [];
   let nextPageToken = "";
   for (;;) {
     try {
-      const res = await apiClient.get<{ nextPageToken?: string; channels: Channel[] }>(
+      const res = await apiClient.get<{ nextPageToken?: string; channels?: Channel[] }>(
         `/projects/${project}/sites/${site}/channels`,
-        { queryParams: { pageToken: nextPageToken, pageSize: 10 } }
+        { queryParams: { pageToken: nextPageToken, pageSize: 10 } },
       );
-      const c = res.body.channels;
-      if (c) {
-        channels.push(...c);
-      }
+      channels.push(...(res.body.channels ?? []));
       nextPageToken = res.body.nextPageToken || "";
       if (!nextPageToken) {
         return channels;
@@ -330,11 +343,11 @@ export async function createChannel(
   project: string | number = "-",
   site: string,
   channelId: string,
-  ttlMillis: number = DEFAULT_DURATION
+  ttlMillis: number = DEFAULT_DURATION,
 ): Promise<Channel> {
   const res = await apiClient.post<{ ttl: string }, Channel>(
     `/projects/${project}/sites/${site}/channels?channelId=${channelId}`,
-    { ttl: `${ttlMillis / 1000}s` }
+    { ttl: `${ttlMillis / 1000}s` },
   );
   return res.body;
 }
@@ -350,12 +363,12 @@ export async function updateChannelTtl(
   project: string | number = "-",
   site: string,
   channelId: string,
-  ttlMillis: number = ONE_WEEK_MS
+  ttlMillis: number = ONE_WEEK_MS,
 ): Promise<Channel> {
   const res = await apiClient.patch<{ ttl: string }, Channel>(
     `/projects/${project}/sites/${site}/channels/${channelId}`,
     { ttl: `${ttlMillis / 1000}s` },
-    { queryParams: { updateMask: "ttl" } }
+    { queryParams: { updateMask: "ttl" } },
   );
   return res.body;
 }
@@ -369,7 +382,7 @@ export async function updateChannelTtl(
 export async function deleteChannel(
   project: string | number = "-",
   site: string,
-  channelId: string
+  channelId: string,
 ): Promise<void> {
   await apiClient.delete(`/projects/${project}/sites/${site}/channels/${channelId}`);
 }
@@ -379,11 +392,11 @@ export async function deleteChannel(
  */
 export async function createVersion(
   siteId: string,
-  version: Omit<Version, VERSION_OUTPUT_FIELDS>
+  version: Omit<Version, VERSION_OUTPUT_FIELDS>,
 ): Promise<string> {
   const res = await apiClient.post<typeof version, { name: string }>(
     `projects/-/sites/${siteId}/versions`,
-    version
+    version,
   );
   return res.body.name;
 }
@@ -394,7 +407,7 @@ export async function createVersion(
 export async function updateVersion(
   site: string,
   versionId: string,
-  version: Partial<Version>
+  version: Partial<Version>,
 ): Promise<Version> {
   const res = await apiClient.patch<Partial<Version>, Version>(
     `projects/-/sites/${site}/versions/${versionId}`,
@@ -409,13 +422,13 @@ export async function updateVersion(
         // "HTTP Error: 40 Unknown path in `updateMask`: `config.rewrites`"
         updateMask: proto.fieldMasks(version, "labels", "config").join(","),
       },
-    }
+    },
   );
   return res.body;
 }
 
 interface ListVersionsResponse {
-  versions: Version[];
+  versions?: Version[];
   nextPageToken?: string;
 }
 
@@ -433,7 +446,7 @@ export async function listVersions(site: string): Promise<Version[]> {
     const res = await apiClient.get<ListVersionsResponse>(`projects/-/sites/${site}/versions`, {
       queryParams,
     });
-    versions.push(...res.body.versions);
+    versions.push(...(res.body.versions ?? []));
     pageToken = res.body.nextPageToken;
   } while (pageToken);
   return versions;
@@ -448,14 +461,14 @@ export async function listVersions(site: string): Promise<Version[]> {
 export async function cloneVersion(
   site: string,
   versionName: string,
-  finalize = false
+  finalize = false,
 ): Promise<Version> {
   const res = await apiClient.post<CloneVersionRequest, LongRunningOperation<Version>>(
     `/projects/-/sites/${site}/versions:clone`,
     {
       sourceVersion: versionName,
       finalize,
-    }
+    },
   );
   const { name: operationName } = res.body;
   const pollRes = await operationPoller.pollOperation<Version>({
@@ -479,12 +492,12 @@ export async function createRelease(
   site: string,
   channel: string,
   version: string,
-  partialRelease?: PartialRelease
+  partialRelease?: PartialRelease,
 ): Promise<Release> {
   const res = await apiClient.post<PartialRelease, Release>(
     `/projects/-/sites/${site}/channels/${channel}/releases`,
     partialRelease,
-    { queryParams: { versionName: version } }
+    { queryParams: { versionName: version } },
   );
   return res.body;
 }
@@ -499,14 +512,11 @@ export async function listSites(project: string): Promise<Site[]> {
   let nextPageToken = "";
   for (;;) {
     try {
-      const res = await apiClient.get<{ sites: Site[]; nextPageToken?: string }>(
+      const res = await apiClient.get<{ sites?: Site[]; nextPageToken?: string }>(
         `/projects/${project}/sites`,
-        { queryParams: { pageToken: nextPageToken, pageSize: 10 } }
+        { queryParams: { pageToken: nextPageToken, pageSize: 10 } },
       );
-      const c = res.body.sites;
-      if (c) {
-        sites.push(...c);
-      }
+      sites.push(...(res.body.sites ?? []));
       nextPageToken = res.body.nextPageToken || "";
       if (!nextPageToken) {
         return sites;
@@ -536,6 +546,7 @@ export async function getSite(project: string, site: string): Promise<Site> {
     if (e instanceof FirebaseError && e.status === 404) {
       throw new FirebaseError(`could not find site "${site}" for project "${project}"`, {
         original: e,
+        status: e.status,
       });
     }
     throw e;
@@ -549,11 +560,20 @@ export async function getSite(project: string, site: string): Promise<Site> {
  * @param appId the Firebase Web App ID (https://firebase.google.com/docs/projects/learn-more#config-files-objects)
  * @return site information.
  */
-export async function createSite(project: string, site: string, appId = ""): Promise<Site> {
+export async function createSite(
+  project: string,
+  site: string,
+  appId = "",
+  validateOnly = false,
+): Promise<Site> {
+  const queryParams: Record<string, string> = { siteId: site };
+  if (validateOnly) {
+    queryParams.validateOnly = "true";
+  }
   const res = await apiClient.post<{ appId: string }, Site>(
     `/projects/${project}/sites`,
     { appId: appId },
-    { queryParams: { siteId: site } }
+    { queryParams },
   );
   return res.body;
 }
@@ -633,8 +653,8 @@ export async function getCleanDomains(project: string, site: string): Promise<st
       return acc;
     }, {});
 
-  // match any string that has ${site}--*
-  const siteMatch = new RegExp(`${site}--`, "i");
+  // match any string that starts with ${site}--*
+  const siteMatch = new RegExp(`^${site}--`, "i");
   // match any string that ends in firebaseapp.com
   const firebaseAppMatch = new RegExp(/firebaseapp.com$/);
   const domains = await getAuthDomains(project);
@@ -668,7 +688,7 @@ export async function getCleanDomains(project: string, site: string): Promise<st
  */
 export async function cleanAuthState(
   project: string,
-  sites: string[]
+  sites: string[],
 ): Promise<Map<string, Array<string>>> {
   const siteDomainMap = new Map();
   for (const site of sites) {
@@ -689,7 +709,7 @@ export async function cleanAuthState(
 export async function getSiteDomains(project: string, site: string): Promise<Domain[]> {
   try {
     const res = await apiClient.get<{ domains: Domain[] }>(
-      `/projects/${project}/sites/${site}/domains`
+      `/projects/${project}/sites/${site}/domains`,
     );
 
     return res.body.domains ?? [];
@@ -726,4 +746,36 @@ export async function getAllSiteDomains(projectId: string, siteId: string): Prom
   ]);
 
   return Array.from(allSiteDomains);
+}
+
+/**
+ * Get the deployment domain.
+ * If hostingChannel is provided, get the channel url, otherwise get the
+ * default site url.
+ */
+export async function getDeploymentDomain(
+  projectId: string,
+  siteId: string,
+  hostingChannel?: string | undefined,
+): Promise<string | null> {
+  if (hostingChannel) {
+    const channel = await getChannel(projectId, siteId, hostingChannel);
+
+    return channel && getHostnameFromUrl(channel?.url);
+  }
+
+  const site = await getSite(projectId, siteId).catch((e: unknown) => {
+    // return null if the site doesn't exist
+    if (
+      e instanceof FirebaseError &&
+      e.original instanceof FirebaseError &&
+      e.original.status === 404
+    ) {
+      return null;
+    }
+
+    throw e;
+  });
+
+  return site && getHostnameFromUrl(site?.defaultUrl);
 }

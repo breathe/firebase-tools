@@ -1,3 +1,7 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { Socket } from "node:net";
+
 import * as _ from "lodash";
 import * as url from "url";
 import * as http from "http";
@@ -10,12 +14,12 @@ import * as winston from "winston";
 import { SPLAT } from "triple-beam";
 import { AssertionError } from "assert";
 const stripAnsi = require("strip-ansi");
+import { getPortPromise as getPort } from "portfinder";
 
 import { configstore } from "./configstore";
 import { FirebaseError } from "./error";
 import { logger, LogLevel } from "./logger";
 import { LogDataOrUndefined } from "./emulator/loggingEmulator";
-import { Socket } from "net";
 
 const IS_WINDOWS = process.platform === "win32";
 const SUCCESS_CHAR = IS_WINDOWS ? "+" : "✔";
@@ -55,7 +59,7 @@ export function getInheritedOption(options: any, key: string): any {
 export function envOverride(
   envname: string,
   value: string,
-  coerce?: (value: string, defaultValue: string) => any
+  coerce?: (value: string, defaultValue: string) => any,
 ): string {
   const currentEnvValue = process.env[envname];
   if (currentEnvValue && currentEnvValue.length) {
@@ -89,7 +93,7 @@ export function getDatabaseViewDataUrl(
   origin: string,
   project: string,
   namespace: string,
-  pathname: string
+  pathname: string,
 ): string {
   const urlObj = new url.URL(origin);
   if (urlObj.hostname.includes("firebaseio") || urlObj.hostname.includes("firebasedatabase")) {
@@ -130,7 +134,7 @@ export function addSubdomain(origin: string, subdomain: string): string {
 export function logSuccess(
   message: string,
   type: LogLevel = "info",
-  data: LogDataOrUndefined = undefined
+  data: LogDataOrUndefined = undefined,
 ): void {
   logger[type](clc.green(clc.bold(`${SUCCESS_CHAR} `)), message, data);
 }
@@ -142,7 +146,7 @@ export function logLabeledSuccess(
   label: string,
   message: string,
   type: LogLevel = "info",
-  data: LogDataOrUndefined = undefined
+  data: LogDataOrUndefined = undefined,
 ): void {
   logger[type](clc.green(clc.bold(`${SUCCESS_CHAR}  ${label}:`)), message, data);
 }
@@ -153,7 +157,7 @@ export function logLabeledSuccess(
 export function logBullet(
   message: string,
   type: LogLevel = "info",
-  data: LogDataOrUndefined = undefined
+  data: LogDataOrUndefined = undefined,
 ): void {
   logger[type](clc.cyan(clc.bold("i ")), message, data);
 }
@@ -165,7 +169,7 @@ export function logLabeledBullet(
   label: string,
   message: string,
   type: LogLevel = "info",
-  data: LogDataOrUndefined = undefined
+  data: LogDataOrUndefined = undefined,
 ): void {
   logger[type](clc.cyan(clc.bold(`i  ${label}:`)), message, data);
 }
@@ -176,7 +180,7 @@ export function logLabeledBullet(
 export function logWarning(
   message: string,
   type: LogLevel = "warn",
-  data: LogDataOrUndefined = undefined
+  data: LogDataOrUndefined = undefined,
 ): void {
   logger[type](clc.yellow(clc.bold(`${WARNING_CHAR} `)), message, data);
 }
@@ -188,7 +192,7 @@ export function logLabeledWarning(
   label: string,
   message: string,
   type: LogLevel = "warn",
-  data: LogDataOrUndefined = undefined
+  data: LogDataOrUndefined = undefined,
 ): void {
   logger[type](clc.yellow(clc.bold(`${WARNING_CHAR}  ${label}:`)), message, data);
 }
@@ -200,7 +204,7 @@ export function logLabeledError(
   label: string,
   message: string,
   type: LogLevel = "error",
-  data: LogDataOrUndefined = undefined
+  data: LogDataOrUndefined = undefined,
 ): void {
   logger[type](clc.red(clc.bold(`${ERROR_CHAR}  ${label}:`)), message, data);
 }
@@ -256,7 +260,7 @@ export function allSettled<T>(promises: Array<Promise<T>>): Promise<Array<Promis
               status: "rejected",
               reason: err,
             };
-          }
+          },
         )
         .then(() => {
           if (!--remaining) {
@@ -395,7 +399,7 @@ export function promiseAllSettled(promises: Array<Promise<any>>): Promise<Settle
 export async function promiseWhile<T>(
   action: () => Promise<T>,
   check: (value: T) => boolean,
-  interval = 2500
+  interval = 2500,
 ): Promise<T> {
   return new Promise<T>((resolve, promiseReject) => {
     const run = async () => {
@@ -430,7 +434,7 @@ export function withTimeout<T>(timeoutMs: number, promise: Promise<T>): Promise<
       (err) => {
         clearTimeout(timeout);
         reject(err);
-      }
+      },
     );
   });
 }
@@ -492,7 +496,7 @@ export function setupLoggers() {
           const segments = [info.message, ...(info[SPLAT] || [])].map(tryStringify);
           return `${stripAnsi(segments.join(" "))}`;
         }),
-      })
+      }),
     );
   } else if (process.env.IS_FIREBASE_CLI) {
     logger.add(
@@ -501,9 +505,9 @@ export function setupLoggers() {
         format: winston.format.printf((info) =>
           [info.message, ...(info[SPLAT] || [])]
             .filter((chunk) => typeof chunk === "string")
-            .join(" ")
+            .join(" "),
         ),
-      })
+      }),
     );
   }
 }
@@ -530,7 +534,6 @@ export async function promiseWithSpinner<T>(action: () => Promise<T>, message: s
  * server creation (e.g. right after `.listen`), BEFORE any connections.
  *
  * Inspired by https://github.com/isaacs/server-destroy/blob/master/index.js
- *
  * @return a function that destroys all connections and closes the server
  */
 export function createDestroyer(server: http.Server): () => Promise<void> {
@@ -603,7 +606,10 @@ export function thirtyDaysFromNow(): Date {
   return new Date(Date.now() + THIRTY_DAYS_IN_MILLISECONDS);
 }
 
-export function assertIsString(val: any, message?: string): asserts val is string {
+/**
+ * Verifies val is a string.
+ */
+export function assertIsString(val: unknown, message?: string): asserts val is string {
   if (typeof val !== "string") {
     throw new AssertionError({
       message: message || `expected "string" but got "${typeof val}"`,
@@ -611,7 +617,10 @@ export function assertIsString(val: any, message?: string): asserts val is strin
   }
 }
 
-export function assertIsNumber(val: any, message?: string): asserts val is number {
+/**
+ * Verifies val is a number.
+ */
+export function assertIsNumber(val: unknown, message?: string): asserts val is number {
   if (typeof val !== "number") {
     throw new AssertionError({
       message: message || `expected "number" but got "${typeof val}"`,
@@ -619,9 +628,12 @@ export function assertIsNumber(val: any, message?: string): asserts val is numbe
   }
 }
 
+/**
+ * Assert val is a string or undefined.
+ */
 export function assertIsStringOrUndefined(
-  val: any,
-  message?: string
+  val: unknown,
+  message?: string,
 ): asserts val is string | undefined {
   if (!(val === undefined || typeof val === "string")) {
     throw new AssertionError({
@@ -635,17 +647,20 @@ export function assertIsStringOrUndefined(
  */
 export function groupBy<T, K extends string | number | symbol>(
   arr: T[],
-  f: (item: T) => K
+  f: (item: T) => K,
 ): Record<K, T[]> {
-  return arr.reduce((result, item) => {
-    const key = f(item);
-    if (result[key]) {
-      result[key].push(item);
-    } else {
-      result[key] = [item];
-    }
-    return result;
-  }, {} as Record<K, T[]>);
+  return arr.reduce(
+    (result, item) => {
+      const key = f(item);
+      if (result[key]) {
+        result[key].push(item);
+      } else {
+        result[key] = [item];
+      }
+      return result;
+    },
+    {} as Record<K, T[]>,
+  );
 }
 
 function cloneArray<T>(arr: T[]): T[] {
@@ -710,7 +725,7 @@ type DebounceOptions = {
 export function debounce<T>(
   fn: (...args: T[]) => void,
   delay: number,
-  { leading }: DebounceOptions = {}
+  { leading }: DebounceOptions = {},
 ): (...args: T[]) => void {
   let timer: NodeJS.Timeout;
   return (...args) => {
@@ -758,4 +773,51 @@ export function connectableHostname(hostname: string): string {
  */
 export async function openInBrowser(url: string): Promise<void> {
   await open(url);
+}
+
+/**
+ * Like openInBrowser but opens the url in a popup.
+ */
+export async function openInBrowserPopup(
+  url: string,
+  buttonText: string,
+): Promise<{ url: string; cleanup: () => void }> {
+  const popupPage = fs
+    .readFileSync(path.join(__dirname, "../templates/popup.html"), { encoding: "utf-8" })
+    .replace("${url}", url)
+    .replace("${buttonText}", buttonText);
+
+  const port = await getPort();
+
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, {
+      "Content-Length": popupPage.length,
+      "Content-Type": "text/html",
+    });
+    res.end(popupPage);
+    req.socket.destroy();
+  });
+
+  server.listen(port);
+
+  const popupPageUri = `http://localhost:${port}`;
+  await openInBrowser(popupPageUri);
+
+  return {
+    url: popupPageUri,
+    cleanup: () => {
+      server.close();
+    },
+  };
+}
+
+/**
+ * Get hostname from a given url or null if the url is invalid
+ */
+export function getHostnameFromUrl(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch (e: unknown) {
+    return null;
+  }
 }

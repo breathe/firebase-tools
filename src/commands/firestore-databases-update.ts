@@ -10,43 +10,44 @@ import { FirestoreOptions } from "../firestore/options";
 
 export const command = new Command("firestore:databases:update <database>")
   .description(
-    "Update a database in your Firebase project. Must specify at least one property to update."
+    "Update a database in your Firebase project. Must specify at least one property to update.",
   )
   .option("--json", "Prints raw json response of the create API call if specified")
   .option(
     "--delete-protection <deleteProtectionState>",
-    "Whether or not to prevent deletion of database, for example 'ENABLED' or 'DISABLED'. Default is 'DISABLED'"
+    "Whether or not to prevent deletion of database, for example 'ENABLED' or 'DISABLED'. Default is 'DISABLED'",
   )
   .option(
     "--point-in-time-recovery <enablement>",
-    "Whether to enable the PITR feature on this database, for example 'ENABLED' or 'DISABLED'. Default is 'DISABLED'"
+    "Whether to enable the PITR feature on this database, for example 'ENABLED' or 'DISABLED'. Default is 'DISABLED'",
   )
   .before(requirePermissions, ["datastore.databases.update"])
   .before(warnEmulatorNotSupported, Emulators.FIRESTORE)
   .action(async (database: string, options: FirestoreOptions) => {
     const api = new fsi.FirestoreApi();
 
-    if (!options.type && !options.deleteProtection && !options.pointInTimeRecovery) {
+    if (!options.deleteProtection && !options.pointInTimeRecovery) {
       logger.error(
-        "Missing properties to update. See firebase firestore:databases:update --help for more info."
+        "Missing properties to update. See firebase firestore:databases:update --help for more info.",
       );
       return;
     }
-    const type: types.DatabaseType = types.DatabaseType.FIRESTORE_NATIVE;
     if (
       options.deleteProtection &&
       options.deleteProtection !== types.DatabaseDeleteProtectionStateOption.ENABLED &&
       options.deleteProtection !== types.DatabaseDeleteProtectionStateOption.DISABLED
     ) {
       logger.error(
-        "Invalid value for flag --delete-protection. See firebase firestore:databases:update --help for more info."
+        "Invalid value for flag --delete-protection. See firebase firestore:databases:update --help for more info.",
       );
       return;
     }
-    const deleteProtectionState: types.DatabaseDeleteProtectionState =
-      options.deleteProtection === types.DatabaseDeleteProtectionStateOption.ENABLED
-        ? types.DatabaseDeleteProtectionState.ENABLED
-        : types.DatabaseDeleteProtectionState.DISABLED;
+    let deleteProtectionState: types.DatabaseDeleteProtectionState | undefined;
+    if (options.deleteProtection === types.DatabaseDeleteProtectionStateOption.ENABLED) {
+      deleteProtectionState = types.DatabaseDeleteProtectionState.ENABLED;
+    } else if (options.deleteProtection === types.DatabaseDeleteProtectionStateOption.DISABLED) {
+      deleteProtectionState = types.DatabaseDeleteProtectionState.DISABLED;
+    }
 
     if (
       options.pointInTimeRecovery &&
@@ -54,21 +55,22 @@ export const command = new Command("firestore:databases:update <database>")
       options.pointInTimeRecovery !== types.PointInTimeRecoveryEnablementOption.DISABLED
     ) {
       logger.error(
-        "Invalid value for flag --point-in-time-recovery. See firebase firestore:databases:update --help for more info."
+        "Invalid value for flag --point-in-time-recovery. See firebase firestore:databases:update --help for more info.",
       );
       return;
     }
-    const pointInTimeRecoveryEnablement: types.PointInTimeRecoveryEnablement =
-      options.pointInTimeRecovery === types.PointInTimeRecoveryEnablementOption.ENABLED
-        ? types.PointInTimeRecoveryEnablement.ENABLED
-        : types.PointInTimeRecoveryEnablement.DISABLED;
+    let pointInTimeRecoveryEnablement: types.PointInTimeRecoveryEnablement | undefined;
+    if (options.pointInTimeRecovery === types.PointInTimeRecoveryEnablementOption.ENABLED) {
+      pointInTimeRecoveryEnablement = types.PointInTimeRecoveryEnablement.ENABLED;
+    } else if (options.pointInTimeRecovery === types.PointInTimeRecoveryEnablementOption.DISABLED) {
+      pointInTimeRecoveryEnablement = types.PointInTimeRecoveryEnablement.DISABLED;
+    }
 
     const databaseResp: types.DatabaseResp = await api.updateDatabase(
       options.project,
       database,
-      type,
       deleteProtectionState,
-      pointInTimeRecoveryEnablement
+      pointInTimeRecoveryEnablement,
     );
 
     if (options.json) {
